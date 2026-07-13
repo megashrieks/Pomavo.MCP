@@ -107,7 +107,7 @@ produce chart data.
   `rgb()`/`rgba()`/`hsl()`, or a named color) to override the palette per
   category/point/series, e.g.
   `... group by status, $"Status Color" return status as x, count() as y, $"Status Color" as color`.
-- Example: `project=${project} and status_category != 'terminal' group by status return status as x, count() as y`
+- Example: `project='${project}' and status_category != 'terminal' group by status return status as x, count() as y`
 - Filters support field comparisons, `and`/`or`/`not`, date literals like `d'-7d'`, and `@mentions`.
 - **Quoting inside `query="..."`:** the query lives inside a double-quoted attribute, so
   never escape inner double quotes (`\"` is invalid and won't parse). Use single quotes
@@ -138,9 +138,16 @@ reads variables from the code):
 - `type="text"` renders an input; `select`/`query` render a single-choice dropdown;
   `multiselect` renders a multi-choice dropdown. A `<Variable>` renders INLINE as a control
   at its position in the layout (exactly like a field), so place it wherever you want it to appear.
-- A multiselect interpolates as a comma-separated list of quoted DSL string literals, so it
-  drops straight into an `in (...)` clause: with `statuses=["todo","inprogress"]`,
-  `"status in (${statuses})"` becomes `"status in ('todo', 'inprogress')"`.
+- **Quoting `${...}` interpolation (IMPORTANT):** a single-value variable (`text` / `select` /
+  `query`) is substituted **raw and UNQUOTED** — `${assignee}` with value `john` becomes just
+  `john`. So when you compare it against a string field you MUST wrap it in single quotes
+  yourself: write `assignee='${assignee}'`, NOT `assignee=${assignee}` (the unquoted form is
+  invalid DSL and the query fails to parse). This applies to every string comparison, e.g.
+  `project='${project}'`, `priority='${priority}'`, `status='${status}'`.
+- A `multiselect` is the exception: it interpolates as a comma-separated list of ALREADY-quoted
+  DSL string literals, so it drops straight into an `in (...)` clause WITHOUT extra quotes —
+  with `statuses=["todo","inprogress"]`, `"status in (${statuses})"` becomes
+  `"status in ('todo', 'inprogress')"`. Do not add your own quotes around a multiselect.
 - Changing a variable's value re-runs every chart query that interpolates it, refreshing the
   whole report.
 
@@ -150,8 +157,8 @@ reads variables from the code):
 <Variable name="project" type="text" default="root/app" />
 <Variable name="priority" type="select" options={["critical","high","medium","low"]} default="high" />
 <Row>
-  <BarChart title="By status" query="project=${project} and priority=${priority} group by status return status as x, count() as y" width={6} />
-  <RadialChart title="Open by priority" query="project=${project} and status_category != 'terminal' group by priority return priority as x, count() as y" width={6} />
+  <BarChart title="By status" query="project='${project}' and priority='${priority}' group by status return status as x, count() as y" width={6} />
+  <RadialChart title="Open by priority" query="project='${project}' and status_category != 'terminal' group by priority return priority as x, count() as y" width={6} />
 </Row>
 ```
 
