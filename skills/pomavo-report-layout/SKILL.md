@@ -20,8 +20,9 @@ JSX-like tags describing a 12-column grid.
   12 columns via `width={n}`.
 - **Report components** (LEAF tags, self-closing), each takes a required `query` attribute:
   `<RadialChart>`, `<BarChart>`, `<LineChart>`, `<AreaChart>`, `<PieChart>`,
-  `<ScatterChart>`, `<Table>`. All charts use the same `x`/`y`/`series`/`color` column
-  contract (below).
+  `<ScatterChart>`, `<RadarChart>`, `<HeatmapChart>`, `<Table>`. Most charts use the same
+  `x`/`y`/`series`/`color` column contract (below); `<HeatmapChart>` uses `x`/`y`/`value`
+  instead.
 - **Component attributes:** `query="..."` (required), `width={1-12}`, `height={rows}`,
   `heightAutoExpand`, `title="..."`.
   - Cartesian charts (BarChart/LineChart/AreaChart/ScatterChart) also accept
@@ -56,6 +57,45 @@ text beside a chart:
 - **Column top-align trick:** a bare `<Text>` next to a tall chart in a `<Row>` centers
   vertically. Wrap the text in a `<Column>` to top-align it so it lines up with the top of
   the chart. Use `<Column>` whenever you want a cell's content anchored to the top.
+- **Columnar layout — wrap EACH column in a `<Column>`:** when a `<Row>` splits into
+  side-by-side columns, wrap every one of its cells in its own `<Column width={n}>` (not just
+  one side). Row children are vertically centered by default, so mixing a bare leaf with a
+  `<Column>` — or leaving cells unwrapped — misaligns their tops. Giving each side its own
+  `<Column>` anchors all columns to the top so they line up correctly:
+
+  ```
+  <Row>
+    <Column width={6}>
+      <Text renderer="markdown">### Left\nNotes for the left side.</Text>
+      <BarChart title="Left chart" query="..." />
+    </Column>
+    <Column width={6}>
+      <Text renderer="markdown">### Right\nNotes for the right side.</Text>
+      <LineChart title="Right chart" query="..." />
+    </Column>
+  </Row>
+  ```
+- **Prefer a compact columnar layout when each section has its own explanation/text.** When
+  every chart comes with explicit descriptive text, put the text and its chart side by side in
+  a `<Row>` (text in a `<Column>`, chart in the other) rather than stacking text-above-chart
+  down the whole page. This is more compact and readable — do this unless told otherwise.
+  **Alternate the description side** row to row: description on the LEFT for one section, on the
+  RIGHT for the next, and so on. The alternation keeps the page from looking repetitive:
+
+  ```
+  <Row>
+    <Column width={4}>
+      <Text renderer="markdown">### Throughput\nCompleted tickets per iteration.</Text>
+    </Column>
+    <BarChart title="Throughput" query="..." width={8} />
+  </Row>
+  <Row>
+    <LineChart title="Cycle time" query="..." width={8} />
+    <Column width={4}>
+      <Text renderer="markdown">### Cycle time\nDays from start to done.</Text>
+    </Column>
+  </Row>
+  ```
 - Vary the visual rhythm: alternate full-width charts, side-by-side rows, and text/chart
   splits so the page doesn't look like one long stack.
 
@@ -85,6 +125,39 @@ possible:
 </Row>
 ```
 
+## Styling text: colors & font size
+
+`<Text>` inherits its color and size from the theme. To override, wrap it in the shared
+`<Color>` / `<Font>` container tags (zero-DOM wrappers that tint/size their children via CSS
+inheritance):
+
+- **`<Color>` — font color.** Prefer THEME variables via `class="..."` so colors stay
+  consistent with light/dark mode: `foreground`, `muted-foreground`, `primary`, `secondary`,
+  `destructive`, `accent-foreground`, etc. For a one-off, use a raw color with
+  `value="#rrggbb"` (or `rgb()/hsl()`). Provide exactly one source.
+- **`<Font size="...">` — text size.** `size` is one of `xs`, `sm`, `base`, `lg`, `xl`,
+  `2xl`, `3xl`, `4xl`, `5xl`.
+- Both cascade to nested children, so you can nest them and wrap `<Text>` (or a whole
+  `<Column>`/`<Row>` of text).
+
+```
+<Color class="muted-foreground">
+  <Text renderer="markdown">Small print / caption under a chart.</Text>
+</Color>
+
+<Font size="2xl">
+  <Color class="primary">
+    <Text renderer="markdown">**Headline KPI**</Text>
+  </Color>
+</Font>
+
+<Color value="#16a34a"><Text>On track</Text></Color>
+```
+
+Note: these style raw `<Text>`. Chart element colors are controlled separately by the query's
+`color` column (see Queries), and markdown headings (`#`, `##`) already imply sizes — reach for
+`<Font>`/`<Color>` when you need finer control or a non-heading emphasis.
+
 ## Queries (chart data)
 
 Each chart's `query` runs against tickets using the search DSL (see the
@@ -97,16 +170,29 @@ produce chart data.
   measure as `y`, e.g. `... group by priority return priority as x, count() as y`.
   Charts auto-detect whether `x` is categorical (labels) or continuous (numeric) and pick
   a band or numeric axis accordingly.
-- **Multi-series** (LineChart / AreaChart / BarChart / ScatterChart): add a `series` column
-  to plot one line/area/point-group per distinct series value, or stacked bar segments,
-  e.g. `... group by day, assignee return day as x, assignee as series, count() as y`.
+- **Multi-series** (LineChart / AreaChart / BarChart / ScatterChart / RadarChart): add a
+  `series` column to plot one line/area/point-group/ring per distinct series value, or stacked
+  bar segments, e.g. `... group by day, assignee return day as x, assignee as series, count() as y`.
 - **Scatter** (ScatterChart): plots one point per `x`/`y` pair; both axes are auto-detected,
   so `x` and `y` may be numeric or categorical, e.g.
   `... group by assignee return avg(effort) as x, count() as y, priority as series`.
+- **Radar** (RadarChart): plots the `y` measure as radial distance around a ring of `x`
+  categories (spider/web); an optional `series` column overlays multiple rings, e.g.
+  `... group by priority return priority as x, count() as y`.
+- **Heatmap** (HeatmapChart): shades an `x` (columns) × `y` (rows) grid by a `value` column —
+  it takes `x`/`y`/`value` (NOT `y` as the measure) and has NO `series` column, e.g.
+  `... group by assignee, status return assignee as x, status as y, count() as value`. By
+  default cells are shaded by a value-scaled gradient; pass a component `threshold` attribute
+  to color cells in discrete bands: a comma-separated list of `minValue:color` pairs where a
+  cell takes the color of the highest threshold at or below its value (use hex/named colors,
+  not comma-bearing `rgb()/hsl()`), e.g.
+  `<HeatmapChart query="..." threshold="0:#22c55e,5:#eab308,10:#ef4444" width={8} />`.
 - **Custom colors:** any chart may return an optional `color` column (any CSS color: hex,
   `rgb()`/`rgba()`/`hsl()`, or a named color) to override the palette per
-  category/point/series, e.g.
-  `... group by status, $"Status Color" return status as x, count() as y, $"Status Color" as color`.
+  category/point/series. To color each status bucket by its own workflow-state color, group by
+  the system `status_color` field and return it as `color`, e.g.
+  `... group by status, status_color return status as x, count() as y, status_color as color`.
+  (`status_color` is a built-in system field — do NOT write it as a `$"..."` custom field.)
 - Example: `project='${project}' and status_category != 'terminal' group by status return status as x, count() as y`
 - Filters support field comparisons, `and`/`or`/`not`, date literals like `d'-7d'`, and `@mentions`.
 - **Quoting inside `query="..."`:** the query lives inside a double-quoted attribute, so
@@ -164,6 +250,10 @@ reads variables from the code):
 
 ## Related MCP tools
 
-- **`create_report`** — creates a report; `layout_code` is this screen language.
+- **`create_report`** — creates a NEW report; `layout_code` is this screen language.
+- **`update_report`** — EDITS an existing report in place (change layout_code, name, variables,
+  or move projects). Use this for changes instead of creating a new report each time; only the
+  fields you pass are modified.
+- **`list_reports`** — to find a report's numeric `report_id` for `update_report`.
 - **`list_projects`** — to find the numeric `project_id` that owns the report.
 - Related skill: **`pomavo-query-language`** — chart and `<Variable>` queries use it.

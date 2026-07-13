@@ -68,7 +68,7 @@ before writing a query or report layout.
 |-------|--------|---------------|
 | `pomavo-query-language` | Read/filter search DSL (operators, fields, `@me`, date literals, `in`/`not in`, `order by`) | `search_tickets`, `get_sprint_tickets`, `execute_query` filter, report queries |
 | `pomavo-mutation-dsl` | Bulk mutations: `SET` / `CREATE` / `LINK` / `UNLINK` / `COMMENT` | `execute_query` |
-| `pomavo-report-layout` | Report layout language: layout tags, chart components, `x/y/series/color` contract, `<Variable>` | `create_report` |
+| `pomavo-report-layout` | Report layout language: layout tags, chart components, `x/y/series/color` contract, `<Variable>` | `create_report`, `update_report` |
 | `pomavo-screen-layout` | Ticket template screen layout language: `Field`/`Label`/`Plugin`/`Row`/`Column`/`Section`/`Collapsible`/`Color`/`Font`/`Trigger`/`Text` | template screen `layout_code` |
 | `pomavo-automation` | Incremental automation authoring: node catalog by category, type system + assignability, stable aliases, `alias.handle` edges, dynamic (Extract Properties) outputs, trigger/cycle/validity rules | `create_automation`, `add_node`, `set_node_config`, `connect_nodes`, `validate_automation` |
 

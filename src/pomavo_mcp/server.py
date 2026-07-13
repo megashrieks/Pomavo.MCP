@@ -633,7 +633,7 @@ async def list_tools() -> list[Tool]:
                 "COMMENT). Load before using `execute_query`.\n"
                 "- `pomavo-report-layout` \u2014 report layout language (layout tags, chart "
                 "components, x/y/series/color contract, `<Variable>`). Load before using "
-                "`create_report`.\n"
+                "`create_report` or `update_report`.\n"
                 "- `pomavo-screen-layout` \u2014 ticket TEMPLATE SCREEN layout language "
                 "(Field/Label/Plugin/Row/Column/Section/Collapsible/Color/Font/Trigger/"
                 "Text). Load before writing a screen's `layout_code`.\n"
@@ -781,6 +781,54 @@ Before writing layout_code, call load_skill(name="pomavo-report-layout") for the
                     },
                 },
                 "required": ["project_id", "name", "layout_code"],
+            },
+        ),
+        Tool(
+            name="update_report",
+            description="""Edit an EXISTING project report in place (do NOT call create_report for changes). Use this to change a report's layout_code, name, variables, or move it to another project. Only the fields you pass are changed; omitted fields keep their current values (the tool fetches the report and merges).
+
+Get the report_id from list_reports or the report's URL. Requires EDIT_REPORT on the report's project (moving to a different project also requires CREATE_REPORT on the target).
+
+Before writing layout_code, call load_skill(name="pomavo-report-layout").""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "report_id": {
+                        "type": "integer",
+                        "description": "Numeric ID of the report to edit (use list_reports to find it)",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Optional new report name. Omit to keep the current name.",
+                    },
+                    "layout_code": {
+                        "type": "string",
+                        "description": "Optional new full layout code (replaces the existing code). Omit to keep the current layout. Call load_skill(name=\"pomavo-report-layout\") for syntax.",
+                    },
+                    "project_id": {
+                        "type": "integer",
+                        "description": "Optional. Move the report to this project (requires CREATE_REPORT there). Omit or pass 0 to leave the owning project unchanged.",
+                    },
+                    "variables": {
+                        "type": "array",
+                        "description": "Optional/legacy. Prefer declaring variables inline in layout_code via <Variable ... /> tags. Omit to keep existing variables. Each: { name, label?, type: 'text'|'select'|'multiselect', options?, optionsQuery?, defaultValue?, defaultValues?, defaultValuesQuery? }.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "label": {"type": "string"},
+                                "type": {"type": "string", "enum": ["text", "select", "multiselect"]},
+                                "options": {"type": "array", "items": {"type": "string"}},
+                                "optionsQuery": {"type": "string"},
+                                "defaultValue": {"type": "string"},
+                                "defaultValues": {"type": "array", "items": {"type": "string"}},
+                                "defaultValuesQuery": {"type": "string"},
+                            },
+                            "required": ["name"],
+                        },
+                    },
+                },
+                "required": ["report_id"],
             },
         ),
         # Automation authoring tools (incremental, alias-addressed)
@@ -1866,6 +1914,45 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 f"# Created report: {report.get('name', report_name)}",
                 f"ID: {report.get('id')}",
                 f"Project ID: {report.get('projectId', project_id)}",
+            ]
+            variables = report.get("variables") or []
+            if variables:
+                lines.append("Variables: " + ", ".join(v.get("name", "") for v in variables))
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "update_report":
+            report_id = arguments.get("report_id")
+            if not report_id:
+                return [TextContent(type="text", text="Error: 'report_id' is required")]
+
+            # Fetch the current report so omitted fields keep their existing values
+            # (partial edit). Only fields explicitly passed in are overridden.
+            current = await client.get_report(report_id)
+
+            new_name = arguments.get("name")
+            if new_name is None:
+                new_name = current.get("name") or ""
+            new_name = new_name.strip()
+
+            new_layout = arguments.get("layout_code")
+            if new_layout is None:
+                new_layout = current.get("layoutCode") or ""
+
+            new_variables = arguments.get("variables")
+            if new_variables is None:
+                new_variables = current.get("variables") or []
+
+            report = await client.update_report(
+                report_id=report_id,
+                name=new_name,
+                layout_code=new_layout,
+                project_id=arguments.get("project_id") or 0,
+                variables=new_variables,
+            )
+            lines = [
+                f"# Updated report: {report.get('name', new_name)}",
+                f"ID: {report.get('id', report_id)}",
+                f"Project ID: {report.get('projectId')}",
             ]
             variables = report.get("variables") or []
             if variables:

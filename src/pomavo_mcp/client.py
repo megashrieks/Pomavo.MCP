@@ -649,6 +649,42 @@ class PomavoClient:
             response.raise_for_status()
             return response.json()
 
+    async def get_report(self, report_id: int) -> dict[str, Any]:
+        """Get a single report by id. Returns the report as a dict."""
+        async with self._get_client() as client:
+            response = await client.get(f"/api/reports/{report_id}")
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def update_report(
+        self,
+        report_id: int,
+        name: str,
+        layout_code: str,
+        project_id: int = 0,
+        variables: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Update a report's name, layout code, variables, and (optionally) owning project.
+
+        Pass project_id=0 to leave the owning project unchanged. Returns the updated report.
+        """
+        payload = {
+            "projectId": project_id,
+            "name": name,
+            "layoutCode": layout_code,
+            "variables": variables or [],
+        }
+        async with self._get_client() as client:
+            response = await client.put(f"/api/reports/{report_id}", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
     # Automations
 
     async def list_automations(self, project_id: int | None = None) -> list[dict[str, Any]]:
