@@ -38,6 +38,53 @@ JSX-like tags describing a 12-column grid.
   `${...}` inside `<Text>` are preserved verbatim (not interpolated).
 - **NOTE:** `<Field>` and `<Label>` tags are NOT valid in reports and render a runtime error.
 
+## Layout composition (don't just stack top-down)
+
+A report does NOT have to be a single top-down column of `<Text>` then `<chart>` then
+`<Text>`. That reads monotonously. Compose with `<Row>` / `<Column>` to place explanatory
+text beside a chart:
+
+```
+<Row>
+  <BarChart title="Throughput" query="group by iteration return iteration as x, count() as y" width={8} />
+  <Column width={4}>
+    <Text renderer="markdown">## Throughput\nCompleted tickets per iteration. Use this to spot dips in delivery.</Text>
+  </Column>
+</Row>
+```
+
+- **Column top-align trick:** a bare `<Text>` next to a tall chart in a `<Row>` centers
+  vertically. Wrap the text in a `<Column>` to top-align it so it lines up with the top of
+  the chart. Use `<Column>` whenever you want a cell's content anchored to the top.
+- Vary the visual rhythm: alternate full-width charts, side-by-side rows, and text/chart
+  splits so the page doesn't look like one long stack.
+
+## Use headers and markdown (avoid monotony)
+
+Give each section a heading and use appropriate text sizes — a wall of same-size charts and
+plain text looks flat. Prefer `<Text renderer="markdown">` and lean on markdown as much as
+possible:
+
+- `# Report Title`, `## Section`, `### Subsection` for a clear hierarchy.
+- Bold, lists, tables, and short intro paragraphs to explain what each chart shows.
+- A markdown header above a `<Row>` of related charts groups them visually.
+
+```
+<Text renderer="markdown"># Sprint Health</Text>
+<Text renderer="markdown">## Delivery</Text>
+<Row>
+  <LineChart title="Burndown" query="..." width={6} />
+  <BarChart title="Scope changes" query="..." width={6} />
+</Row>
+<Text renderer="markdown">## Quality</Text>
+<Row>
+  <RadialChart title="Open bugs by priority" query="..." width={6} />
+  <Column width={6}>
+    <Text renderer="markdown">### Notes\nBugs above **P2** must be triaged before release.</Text>
+  </Column>
+</Row>
+```
+
 ## Queries (chart data)
 
 Each chart's `query` runs against tickets using the search DSL (see the
