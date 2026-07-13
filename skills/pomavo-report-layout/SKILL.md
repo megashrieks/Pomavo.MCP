@@ -26,6 +26,10 @@ JSX-like tags describing a 12-column grid.
   `heightAutoExpand`, `title="..."`.
   - Cartesian charts (BarChart/LineChart/AreaChart/ScatterChart) also accept
     `xlabel="..."` and `ylabel="..."` for axis titles.
+  - Date axes: when an axis value is a date it arrives as an epoch-millisecond number
+    and shows as a large integer by default. Annotate the axis with `xformat` / `yformat`
+    to render readable dates. Values: `date`, `datetime`, `time`, `month`, `year`. Example:
+    `<LineChart query="'End Date' != '' group by 'End Date' return 'End Date' as x, count() as y" xformat="date" />`.
   - `<BarChart>` also accepts `variant="horizontal"` to render horizontal bars
     (default is vertical).
 - **`<Text>...</Text>`** renders literal text between the tags. Add `renderer="markdown"`
@@ -58,6 +62,11 @@ produce chart data.
   `... group by status, $"Status Color" return status as x, count() as y, $"Status Color" as color`.
 - Example: `project=${project} and status_category != 'terminal' group by status return status as x, count() as y`
 - Filters support field comparisons, `and`/`or`/`not`, date literals like `d'-7d'`, and `@mentions`.
+- **Quoting inside `query="..."`:** the query lives inside a double-quoted attribute, so
+  never escape inner double quotes (`\"` is invalid and won't parse). Use single quotes
+  `'...'` for both string values and field names with spaces — single quotes work
+  everywhere in the DSL. Example:
+  `query="status_category != 'terminal' and 'End Date' != '' group by 'End Date', Priority return 'End Date' as x, Priority as series, count() as y"`
 
 ## Variables
 

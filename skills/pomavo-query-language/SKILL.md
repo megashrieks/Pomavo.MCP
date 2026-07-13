@@ -64,6 +64,24 @@ language shared across the product:
 Use the field label directly: `Priority = "High"`, `Assignee = "john"`, `Title contains "bug"`.
 Quote names with spaces: `"Due Date" = d'2025-01-15'`.
 
+## Strings & quotes
+
+Single quotes (`'...'`) and double quotes (`"..."`) are interchangeable — both work
+for string **values** *and* for field **names** with spaces. Prefer single quotes so
+a query stays valid when it is embedded inside a double-quoted attribute (see below):
+
+- Value: `status_category != 'terminal'`, empty value: `"End Date" != ''`
+- Field name with spaces: `'End Date' >= d'-7d'`, `group by 'End Date'`, `'End Date' as x`
+
+**Embedding a query in a report layout attribute:** report chart/variable queries are
+authored inside a double-quoted attribute, e.g. `query="..."`. Do **not** escape inner
+double quotes (`\"` is not valid in a layout attribute and will fail to parse). Instead,
+write the whole query with single quotes:
+
+```
+query="status_category != 'terminal' and 'End Date' != '' group by 'End Date', Priority return 'End Date' as x, Priority as series, count() as y"
+```
+
 ## User mentions
 
 - `@me` — the current logged-in user.
