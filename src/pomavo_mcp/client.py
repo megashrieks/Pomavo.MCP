@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from .models import (
+    AggregationResult,
     AvailableTransition,
     CreateTicketRequest,
     FieldUpdate,
@@ -820,6 +821,493 @@ class PomavoClient:
             response.raise_for_status()
             return response.json()
 
+    async def delete_automation(self, automation_id: int) -> None:
+        """Delete an entire automation rule."""
+        async with self._get_client() as client:
+            response = await client.delete(f"/api/AutomationRules/{automation_id}")
+            response.raise_for_status()
+
+    # Template authoring (create / edit / delete)
+
+    async def get_template_raw(self, template_id: int) -> dict[str, Any]:
+        """Get the raw JSON of a template (including fields and screens)."""
+        async with self._get_client() as client:
+            response = await client.get(f"/api/templates/{template_id}")
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def create_template(self, template: dict[str, Any]) -> dict[str, Any]:
+        """Create a template. `template` is the full Template body (camelCase)."""
+        async with self._get_client() as client:
+            response = await client.post("/api/templates", json=template)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def update_template_general(
+        self,
+        template_id: int,
+        name: str,
+        description: str | None = None,
+        icon: str | None = None,
+        color: str | None = None,
+    ) -> dict[str, Any]:
+        """Update a template's name/description/icon/color."""
+        payload = {
+            "name": name,
+            "description": description,
+            "icon": icon,
+            "color": color,
+        }
+        async with self._get_client() as client:
+            response = await client.put(
+                f"/api/templates/{template_id}/general", json=payload
+            )
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def update_template_workflow(
+        self, template_id: int, workflow_id: int
+    ) -> dict[str, Any]:
+        """Change which workflow a template uses."""
+        async with self._get_client() as client:
+            response = await client.put(
+                f"/api/templates/{template_id}/workflow",
+                json={"workflowId": workflow_id},
+            )
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def delete_template(self, template_id: int) -> None:
+        """Soft-delete a template."""
+        async with self._get_client() as client:
+            response = await client.delete(f"/api/templates/{template_id}")
+            response.raise_for_status()
+
+    # Screens (managed via the template's screen collection)
+
+    async def update_template_screens(
+        self, template_id: int, screens: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Replace the full screen collection of a template."""
+        async with self._get_client() as client:
+            response = await client.put(
+                f"/api/templates/{template_id}/screens", json=screens
+            )
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    @staticmethod
+    def _match_screen(screen: dict[str, Any], screen_id: int | None, name: str | None) -> bool:
+        if screen_id is not None and screen.get("id") == screen_id:
+            return True
+        if name is not None and str(screen.get("name", "")).lower() == name.lower():
+            return True
+        return False
+
+    async def create_screen(
+        self,
+        template_id: int,
+        name: str,
+        description: str,
+        layout_code: str = "",
+        sort_order: int | None = None,
+    ) -> dict[str, Any]:
+        """Add a screen to a template (fetch-mutate-save)."""
+        tmpl = await self.get_template_raw(template_id)
+        screens = list(tmpl.get("screens") or [])
+        new_screen: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "layoutCode": layout_code,
+            "templateId": template_id,
+        }
+        if sort_order is not None:
+            new_screen["sortOrder"] = sort_order
+        screens.append(new_screen)
+        return await self.update_template_screens(template_id, screens)
+
+    async def update_screen(
+        self,
+        template_id: int,
+        screen_id: int | None = None,
+        name: str | None = None,
+        description: str | None = None,
+        layout_code: str | None = None,
+        sort_order: int | None = None,
+    ) -> dict[str, Any]:
+        """Edit a single screen on a template (fetch-mutate-save).
+
+        Identify the screen by `screen_id` or by `name`.
+        """
+        tmpl = await self.get_template_raw(template_id)
+        screens = list(tmpl.get("screens") or [])
+        matched = False
+        for screen in screens:
+            if self._match_screen(screen, screen_id, name):
+                if description is not None:
+                    screen["description"] = description
+                if layout_code is not None:
+                    screen["layoutCode"] = layout_code
+                if sort_order is not None:
+                    screen["sortOrder"] = sort_order
+                matched = True
+                break
+        if not matched:
+            raise ValueError(
+                f"No screen matching id={screen_id!r} name={name!r} on template {template_id}"
+            )
+        return await self.update_template_screens(template_id, screens)
+
+    async def delete_screen(
+        self,
+        template_id: int,
+        screen_id: int | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Remove a screen from a template (fetch-mutate-save)."""
+        tmpl = await self.get_template_raw(template_id)
+        screens = list(tmpl.get("screens") or [])
+        remaining = [s for s in screens if not self._match_screen(s, screen_id, name)]
+        if len(remaining) == len(screens):
+            raise ValueError(
+                f"No screen matching id={screen_id!r} name={name!r} on template {template_id}"
+            )
+        return await self.update_template_screens(template_id, remaining)
+
+    # Workflows
+
+    async def list_workflows(self) -> list[dict[str, Any]]:
+        """List all workflows in the org."""
+        async with self._get_client() as client:
+            response = await client.get("/api/workflows")
+            response.raise_for_status()
+            return response.json()
+
+    async def get_workflow(self, workflow_id: int) -> dict[str, Any]:
+        """Get a single workflow (states + transitions)."""
+        async with self._get_client() as client:
+            response = await client.get(f"/api/workflows/{workflow_id}")
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def create_workflow(
+        self,
+        name: str,
+        description: str,
+        states: list[dict[str, Any]],
+        transitions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Create a workflow with its states and transitions."""
+        payload = {
+            "name": name,
+            "description": description,
+            "states": states,
+            "transitions": transitions,
+        }
+        async with self._get_client() as client:
+            response = await client.post("/api/workflows", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def update_workflow(
+        self,
+        workflow_id: int,
+        name: str,
+        description: str,
+        states: list[dict[str, Any]],
+        transitions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Replace a workflow's name/description/states/transitions (bulk)."""
+        payload = {
+            "name": name,
+            "description": description,
+            "states": states,
+            "transitions": transitions,
+        }
+        async with self._get_client() as client:
+            response = await client.put(f"/api/workflows/{workflow_id}", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def delete_workflow(self, workflow_id: int) -> None:
+        """Delete a workflow (fails if referenced by templates)."""
+        async with self._get_client() as client:
+            response = await client.delete(f"/api/workflows/{workflow_id}")
+            response.raise_for_status()
+
+    @staticmethod
+    def _strip_workflow_collections(
+        wf: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        return list(wf.get("states") or []), list(wf.get("transitions") or [])
+
+    async def add_workflow_state(
+        self,
+        workflow_id: int,
+        name: str,
+        description: str,
+        category: str,
+        color: str,
+        icon: str | None = None,
+        graph_data: str = "{}",
+        state_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Add a single state to a workflow (fetch-mutate-save)."""
+        wf = await self.get_workflow(workflow_id)
+        states, transitions = self._strip_workflow_collections(wf)
+        states.append(
+            {
+                "id": state_id or str(uuid.uuid4()),
+                "name": name,
+                "description": description,
+                "category": category,
+                "color": color,
+                "icon": icon,
+                "graphData": graph_data,
+            }
+        )
+        return await self.update_workflow(
+            workflow_id, wf["name"], wf["description"], states, transitions
+        )
+
+    async def remove_workflow_state(
+        self,
+        workflow_id: int,
+        state_id: str | None = None,
+        state_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Remove a state (and any transitions touching it) from a workflow."""
+        wf = await self.get_workflow(workflow_id)
+        states, transitions = self._strip_workflow_collections(wf)
+
+        def matches(s: dict[str, Any]) -> bool:
+            if state_id is not None and s.get("id") == state_id:
+                return True
+            if state_name is not None and str(s.get("name", "")).lower() == state_name.lower():
+                return True
+            return False
+
+        target_ids = {s["id"] for s in states if matches(s)}
+        if not target_ids:
+            raise ValueError(
+                f"No state matching id={state_id!r} name={state_name!r} in workflow {workflow_id}"
+            )
+        states = [s for s in states if s["id"] not in target_ids]
+        transitions = [
+            t
+            for t in transitions
+            if t.get("fromStateId") not in target_ids
+            and t.get("toStateId") not in target_ids
+        ]
+        return await self.update_workflow(
+            workflow_id, wf["name"], wf["description"], states, transitions
+        )
+
+    async def add_workflow_transition(
+        self,
+        workflow_id: int,
+        name: str,
+        description: str,
+        from_state_id: str,
+        to_state_id: str,
+    ) -> dict[str, Any]:
+        """Add a single transition to a workflow (fetch-mutate-save)."""
+        wf = await self.get_workflow(workflow_id)
+        states, transitions = self._strip_workflow_collections(wf)
+        transitions.append(
+            {
+                "name": name,
+                "description": description,
+                "fromStateId": from_state_id,
+                "toStateId": to_state_id,
+            }
+        )
+        return await self.update_workflow(
+            workflow_id, wf["name"], wf["description"], states, transitions
+        )
+
+    async def remove_workflow_transition(
+        self,
+        workflow_id: int,
+        transition_id: str | None = None,
+        transition_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Remove a transition from a workflow (by id or name)."""
+        wf = await self.get_workflow(workflow_id)
+        states, transitions = self._strip_workflow_collections(wf)
+
+        def matches(t: dict[str, Any]) -> bool:
+            if transition_id is not None and str(t.get("id")) == str(transition_id):
+                return True
+            if (
+                transition_name is not None
+                and str(t.get("name", "")).lower() == transition_name.lower()
+            ):
+                return True
+            return False
+
+        remaining = [t for t in transitions if not matches(t)]
+        if len(remaining) == len(transitions):
+            raise ValueError(
+                f"No transition matching id={transition_id!r} name={transition_name!r} "
+                f"in workflow {workflow_id}"
+            )
+        return await self.update_workflow(
+            workflow_id, wf["name"], wf["description"], states, remaining
+        )
+
+    # Template links (relationship type configuration)
+
+    async def list_template_links(self) -> list[dict[str, Any]]:
+        """List all template link types in the org."""
+        async with self._get_client() as client:
+            response = await client.get("/api/template-links")
+            response.raise_for_status()
+            return response.json()
+
+    async def create_template_link(
+        self, name: str, inward_name: str, outward_name: str
+    ) -> dict[str, Any]:
+        """Create a template link type (e.g. Blocks / is blocked by / blocks)."""
+        payload = {"name": name, "inwardName": inward_name, "outwardName": outward_name}
+        async with self._get_client() as client:
+            response = await client.post("/api/template-links", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def update_template_link(
+        self, link_id: int, name: str, inward_name: str, outward_name: str
+    ) -> dict[str, Any]:
+        """Update a template link type."""
+        payload = {"name": name, "inwardName": inward_name, "outwardName": outward_name}
+        async with self._get_client() as client:
+            response = await client.put(f"/api/template-links/{link_id}", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def delete_template_link(self, link_id: int) -> None:
+        """Delete a template link type."""
+        async with self._get_client() as client:
+            response = await client.delete(f"/api/template-links/{link_id}")
+            response.raise_for_status()
+
+    # Shared fields
+
+    async def list_shared_fields(self) -> list[dict[str, Any]]:
+        """List all shared (org-level) fields."""
+        async with self._get_client() as client:
+            response = await client.get("/api/shared-fields")
+            response.raise_for_status()
+            return response.json()
+
+    async def create_shared_field(
+        self, label: str, field_type: str, field_options: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Create a shared field. `field_options` is the FieldOptions body (camelCase)."""
+        payload: dict[str, Any] = {"label": label, "fieldType": field_type}
+        if field_options is not None:
+            payload["fieldOptions"] = field_options
+        async with self._get_client() as client:
+            response = await client.post("/api/shared-fields", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def update_shared_field(
+        self,
+        field_id: str,
+        label: str,
+        field_type: str,
+        field_options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Update a shared field."""
+        payload: dict[str, Any] = {
+            "id": field_id,
+            "label": label,
+            "fieldType": field_type,
+        }
+        if field_options is not None:
+            payload["fieldOptions"] = field_options
+        async with self._get_client() as client:
+            response = await client.put(f"/api/shared-fields/{field_id}", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def delete_shared_field(self, field_id: str, force: bool = False) -> dict[str, Any]:
+        """Delete a shared field. Set force=True to remove it from all templates first."""
+        async with self._get_client() as client:
+            response = await client.delete(
+                f"/api/shared-fields/{field_id}", params={"force": str(force).lower()}
+            )
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def add_shared_field_to_template(
+        self, template_id: int, shared_field_id: str
+    ) -> dict[str, Any]:
+        """Attach an existing shared field to a template."""
+        async with self._get_client() as client:
+            response = await client.post(
+                f"/api/templates/{template_id}/shared-fields/{shared_field_id}"
+            )
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
+    async def remove_shared_field_from_template(
+        self, template_id: int, shared_field_id: str
+    ) -> dict[str, Any]:
+        """Detach a shared field from a template."""
+        async with self._get_client() as client:
+            response = await client.delete(
+                f"/api/templates/{template_id}/shared-fields/{shared_field_id}"
+            )
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "success" in data:
+                data = data["success"]
+            return data
+
     # Tickets
 
     async def get_ticket(self, ticket_id: int) -> Ticket:
@@ -926,16 +1414,23 @@ class PomavoClient:
         query: str = "",
         page: int = 1,
         page_size: int = 20,
-    ) -> SearchResult:
-        """Search for tickets.
+    ) -> SearchResult | AggregationResult:
+        """Search for tickets, or run an aggregation projection.
+
+        A plain filter query returns a paginated :class:`SearchResult` of
+        tickets. A query containing a ``group by`` and/or ``return`` clause is
+        routed by the API to the aggregation path, which returns a different
+        shape (named ``columns`` + projected ``rows``); this method detects that
+        shape and returns an :class:`AggregationResult` instead.
 
         Args:
-            query: Search query string
+            query: Search query string (optionally with ``group by`` / ``return``)
             page: Page number (1-indexed)
             page_size: Number of results per page
 
         Returns:
-            Search results
+            A ``SearchResult`` for ticket queries, or an ``AggregationResult``
+            for ``group by`` / ``return`` projection queries.
         """
         params = {"page": page, "pageSize": page_size}
         if query:
@@ -944,7 +1439,12 @@ class PomavoClient:
         async with self._get_client() as client:
             response = await client.get("/api/search", params=params)
             response.raise_for_status()
-            return SearchResult.model_validate(response.json())
+            data = response.json()
+            # Aggregation (group by / return) responses carry `columns`/`rows`
+            # rather than the paginated `items` of a ticket search.
+            if isinstance(data, dict) and "columns" in data and "items" not in data:
+                return AggregationResult.model_validate(data)
+            return SearchResult.model_validate(data)
 
     # Execute (mutation queries)
 

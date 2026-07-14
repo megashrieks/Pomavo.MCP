@@ -10,6 +10,7 @@ from mcp.server import Server
 from mcp.types import Tool, TextContent, ImageContent
 
 from .client import PomavoClient, normalize_markdown, prepare_rich_text
+from .models import AggregationResult
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -61,6 +62,29 @@ AVAILABLE_SKILLS: dict[str, str] = {
         "Building automation rules incrementally: the node catalog, the type system + "
         "assignability, the alias workflow, 'alias.handle' edges, dynamic outputs, and the "
         "trigger/validation rules used by the automation authoring tools."
+    ),
+    "pomavo-template": (
+        "Authoring ticket TEMPLATES (issue types): mandatory fields (Title/Description/"
+        "Author/Assignee), field types + options, screen collection, and workflow rules. "
+        "Load before create_template."
+    ),
+    "pomavo-workflow": (
+        "Authoring WORKFLOWS (state machines): state categories (initial/default/terminal), "
+        "the required 'Created' initial state, transitions, and the granular add/remove "
+        "state/transition tools."
+    ),
+    "pomavo-screen": (
+        "TEMPLATE SCREEN types (create/issues/section/preview-modal/preview-pane/"
+        "preview-sheet) and how they are used. References pomavo-screen-layout for the "
+        "layout language itself. Load before create_screen/update_screen."
+    ),
+    "pomavo-template-link": (
+        "Authoring TEMPLATE LINK types (relationship types): name + outward/inward names "
+        "(e.g. Blocks / blocks / is blocked by)."
+    ),
+    "pomavo-shared-fields": (
+        "Authoring SHARED (org-level) fields: field types, FieldOptions, and attaching/"
+        "detaching them to/from templates."
     ),
 }
 
@@ -454,6 +478,46 @@ def format_search_result(item: Any) -> str:
     return f"- **{item.sequence_number}** ({item.template_name}): {title} [{item.status}]"
 
 
+def _format_cell(value: Any) -> str:
+    """Render a single aggregation cell value as compact, table-safe text."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    text = str(value)
+    # Escape pipes so a value never breaks the markdown table layout.
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def format_aggregation_result(result: Any) -> str:
+    """Format a RETURN / GROUP BY aggregation result as a markdown table.
+
+    `result` is an AggregationResult with `columns` (ordered names) and `rows`
+    (a list of {column: value} dicts). Used for projection queries that return
+    computed columns rather than tickets (e.g. `group by status return status
+    as x, count() as y`)."""
+    columns = list(result.columns)
+    rows = list(result.rows)
+
+    lines = [
+        "# Query Results",
+        f"{len(rows)} row{'s' if len(rows) != 1 else ''}"
+        + (f" from {result.candidate_count} candidate tickets" if result.candidate_count else ""),
+        "",
+    ]
+
+    if not columns:
+        lines.append("_Query returned no columns._")
+        return "\n".join(lines)
+
+    lines.append("| " + " | ".join(columns) + " |")
+    lines.append("| " + " | ".join("---" for _ in columns) + " |")
+    for row in rows:
+        lines.append("| " + " | ".join(_format_cell(row.get(col)) for col in columns) + " |")
+
+    return "\n".join(lines)
+
+
 def _format_type_ref(t: Any) -> str:
     """Format a serialized TypeReference ({typeId, typeArgs, isTypeVariable}) as text."""
     if not isinstance(t, dict):
@@ -640,7 +704,18 @@ async def list_tools() -> list[Tool]:
                 "- `pomavo-automation` \u2014 incremental automation authoring (node catalog, "
                 "type system, alias workflow, `alias.handle` edges, triggers/validation). "
                 "Load before using the automation tools (`create_automation`, `add_node`, "
-                "`connect_nodes`, etc.)."
+                "`connect_nodes`, etc.).\n"
+                "- `pomavo-template` \u2014 authoring ticket templates (mandatory fields, field "
+                "types, screens, workflow). Load before `create_template`.\n"
+                "- `pomavo-workflow` \u2014 authoring workflows (state categories, the required "
+                "'Created' initial state, transitions). Load before `create_workflow` and the "
+                "granular add/remove state/transition tools.\n"
+                "- `pomavo-screen` \u2014 template screen types. Load before `create_screen`/"
+                "`update_screen` (and `pomavo-screen-layout` for the layout code).\n"
+                "- `pomavo-template-link` \u2014 authoring relationship (link) types. Load before "
+                "`create_template_link`.\n"
+                "- `pomavo-shared-fields` \u2014 authoring shared org-level fields. Load before "
+                "`create_shared_field`."
             ),
             inputSchema={
                 "type": "object",
@@ -784,6 +859,34 @@ Before writing layout_code, call load_skill(name="pomavo-report-layout") for the
             },
         ),
         Tool(
+            name="list_reports",
+            description="""List all reports configured for a project. Returns each report's id, name, and owning project so you can find a report_id to pass to get_report or update_report. Use list_projects to find the numeric project_id.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "integer",
+                        "description": "Numeric ID of the project whose reports to list (use list_projects to find it)",
+                    },
+                },
+                "required": ["project_id"],
+            },
+        ),
+        Tool(
+            name="get_report",
+            description="""Get a single project report by its numeric id, including its full layout_code and variables. Use this to inspect a report before editing it with update_report. Get the report_id from list_reports or the report's URL.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "report_id": {
+                        "type": "integer",
+                        "description": "Numeric ID of the report to fetch (use list_reports to find it)",
+                    },
+                },
+                "required": ["report_id"],
+            },
+        ),
+        Tool(
             name="update_report",
             description="""Edit an EXISTING project report in place (do NOT call create_report for changes). Use this to change a report's layout_code, name, variables, or move it to another project. Only the fields you pass are changed; omitted fields keep their current values (the tool fetches the report and merges).
 
@@ -831,7 +934,402 @@ Before writing layout_code, call load_skill(name="pomavo-report-layout").""",
                 "required": ["report_id"],
             },
         ),
+        # Template authoring tools
+        Tool(
+            name="create_template",
+            description="""Create a ticket template (issue type) — its fields, screens (layout), and workflow.
+
+Before calling, call load_skill(name="pomavo-template") for the mandatory fields (Title, Description, Author, Assignee), workflow rules, and field/screen structure. For each screen's layout_code, also call load_skill(name="pomavo-screen-layout").
+
+Provide EITHER workflow_id (an existing workflow) OR workflow (an inline new workflow). One is required.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Template name (unique within the org)."},
+                    "description": {"type": "string", "description": "Template description."},
+                    "icon": {"type": "string", "description": "Lucide icon name (e.g. 'bug', 'check-square')."},
+                    "color": {"type": "string", "description": "Hex color (e.g. '#e11d48')."},
+                    "fields": {
+                        "type": "array",
+                        "description": "Field definitions. MUST include a 'Title', 'Description', 'Author' (fieldType 'user') and 'Assignee' (fieldType 'user'). See the pomavo-template skill.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "description": "Optional GUID; auto-generated if omitted. Referenced by screen layout code."},
+                                "label": {"type": "string"},
+                                "fieldType": {"type": "string", "enum": ["text", "number", "textarea", "date", "time", "datetime", "checkbox", "dropdown", "multiselect", "user"]},
+                                "fieldOptions": {"type": "object", "description": "Optional. { selectOptions?: [{value,label,icon?,color?}], allowMultipleUsers?, topicId?, defaultValue? }"},
+                            },
+                            "required": ["label", "fieldType"],
+                        },
+                    },
+                    "screens": {
+                        "type": "array",
+                        "description": "Screen definitions (at least one). Common names: create, issues, section, preview-modal, preview-pane, preview-sheet. See pomavo-screen skill.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "description": {"type": "string"},
+                                "layoutCode": {"type": "string", "description": "JSX-like layout code referencing field ids. Call load_skill(name=\"pomavo-screen-layout\")."},
+                                "sortOrder": {"type": "integer", "description": "Only meaningful for 'section' screens (sidebar order)."},
+                            },
+                            "required": ["name", "description"],
+                        },
+                    },
+                    "workflow_id": {"type": "integer", "description": "ID of an existing workflow to use. Provide this OR 'workflow'."},
+                    "workflow": {
+                        "type": "object",
+                        "description": "Inline new workflow. Provide this OR 'workflow_id'. Must have a state with category 'initial' named 'Created'. See pomavo-workflow skill.",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "states": {"type": "array", "items": {"type": "object"}},
+                            "transitions": {"type": "array", "items": {"type": "object"}},
+                        },
+                    },
+                    "sequence_config": {
+                        "type": "object",
+                        "description": "REQUIRED ticket-ID prefix config. Without it the template cannot mint ticket IDs and ticket creation will fail. { prefix, suffix, minimumDigits (1-10) }. Prefix must be unique per org and not end in a digit.",
+                        "properties": {
+                            "prefix": {"type": "string"},
+                            "suffix": {"type": "string"},
+                            "minimumDigits": {"type": "integer"},
+                        },
+                        "required": ["prefix"],
+                    },
+                },
+                "required": ["name", "description", "icon", "color", "fields", "screens", "sequence_config"],
+            },
+        ),
+        Tool(
+            name="update_template",
+            description="Edit a template's general properties (name, description, icon, color). To change fields/screens/workflow use the dedicated screen/workflow tools or update_template_workflow. Requires the numeric template id (use list_templates).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "template_id": {"type": "integer", "description": "Numeric template id."},
+                    "name": {"type": "string", "description": "New name (required by the endpoint)."},
+                    "description": {"type": "string", "description": "Optional new description."},
+                    "icon": {"type": "string", "description": "Optional new lucide icon name."},
+                    "color": {"type": "string", "description": "Optional new hex color."},
+                },
+                "required": ["template_id", "name"],
+            },
+        ),
+        Tool(
+            name="update_template_workflow",
+            description="Change which workflow a template uses. Requires the template id and the target workflow id (use list_workflows).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "template_id": {"type": "integer", "description": "Numeric template id."},
+                    "workflow_id": {"type": "integer", "description": "Numeric workflow id to assign."},
+                },
+                "required": ["template_id", "workflow_id"],
+            },
+        ),
+        Tool(
+            name="delete_template",
+            description="Soft-delete a template by its numeric id.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "template_id": {"type": "integer", "description": "Numeric template id."},
+                },
+                "required": ["template_id"],
+            },
+        ),
+        # Screen tools (edit a template's screen collection)
+        Tool(
+            name="create_screen",
+            description="""Add a screen to a template. Screens hold layout code (charts/fields).
+
+Call load_skill(name="pomavo-screen") for screen types and load_skill(name="pomavo-screen-layout") for the layout language before writing layout_code.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "template_id": {"type": "integer", "description": "Numeric template id."},
+                    "name": {"type": "string", "description": "Screen name/type (e.g. 'create', 'section', 'preview-modal')."},
+                    "description": {"type": "string", "description": "Screen description."},
+                    "layout_code": {"type": "string", "description": "JSX-like layout code referencing template field ids."},
+                    "sort_order": {"type": "integer", "description": "Only for 'section' screens (sidebar order)."},
+                },
+                "required": ["template_id", "name", "description"],
+            },
+        ),
+        Tool(
+            name="update_screen",
+            description="Edit a single screen on a template (identify by screen_id or by name). Only fields you pass are changed. Call load_skill(name=\"pomavo-screen-layout\") before writing layout_code.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "template_id": {"type": "integer", "description": "Numeric template id."},
+                    "screen_id": {"type": "integer", "description": "Numeric screen id (or use 'name')."},
+                    "name": {"type": "string", "description": "Screen name to match (or use 'screen_id')."},
+                    "description": {"type": "string", "description": "Optional new description."},
+                    "layout_code": {"type": "string", "description": "Optional new layout code."},
+                    "sort_order": {"type": "integer", "description": "Optional new sort order."},
+                },
+                "required": ["template_id"],
+            },
+        ),
+        Tool(
+            name="delete_screen",
+            description="Remove a screen from a template (identify by screen_id or by name).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "template_id": {"type": "integer", "description": "Numeric template id."},
+                    "screen_id": {"type": "integer", "description": "Numeric screen id (or use 'name')."},
+                    "name": {"type": "string", "description": "Screen name to match (or use 'screen_id')."},
+                },
+                "required": ["template_id"],
+            },
+        ),
+        # Workflow tools
+        Tool(
+            name="list_workflows",
+            description="List all workflows in the org (id, name, state/transition counts, how many templates use each).",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        Tool(
+            name="get_workflow",
+            description="Get a workflow's full state machine (states + transitions) by numeric id.",
+            inputSchema={
+                "type": "object",
+                "properties": {"workflow_id": {"type": "integer", "description": "Numeric workflow id."}},
+                "required": ["workflow_id"],
+            },
+        ),
+        Tool(
+            name="create_workflow",
+            description="""Create a workflow (state machine) with its states and transitions.
+
+Call load_skill(name="pomavo-workflow") first: a workflow must have a state with category 'initial' named 'Created'; categories are 'initial', 'default', 'terminal'.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "states": {
+                        "type": "array",
+                        "description": "Each: { id?, name, description, category (initial|default|terminal), color (hex), icon?, graphData (JSON string) }.",
+                        "items": {"type": "object"},
+                    },
+                    "transitions": {
+                        "type": "array",
+                        "description": "Each: { name, description, fromStateId, toStateId }.",
+                        "items": {"type": "object"},
+                    },
+                },
+                "required": ["name", "description", "states", "transitions"],
+            },
+        ),
+        Tool(
+            name="update_workflow",
+            description="Replace a workflow's name/description/states/transitions in bulk. Omitting a state deletes it. Prefer the granular add/remove state/transition tools for small edits.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "states": {"type": "array", "items": {"type": "object"}},
+                    "transitions": {"type": "array", "items": {"type": "object"}},
+                },
+                "required": ["workflow_id", "name", "description", "states", "transitions"],
+            },
+        ),
+        Tool(
+            name="delete_workflow",
+            description="Delete a workflow by id. Fails if any template still references it.",
+            inputSchema={
+                "type": "object",
+                "properties": {"workflow_id": {"type": "integer"}},
+                "required": ["workflow_id"],
+            },
+        ),
+        Tool(
+            name="add_workflow_state",
+            description="Add a single state to an existing workflow (fetches, appends, saves). Categories: initial, default, terminal.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "category": {"type": "string", "enum": ["initial", "default", "terminal"]},
+                    "color": {"type": "string", "description": "Hex color (e.g. '#0078d4')."},
+                    "icon": {"type": "string", "description": "Optional lucide icon name."},
+                    "state_id": {"type": "string", "description": "Optional GUID; auto-generated if omitted."},
+                    "graph_data": {"type": "string", "description": "Optional JSON string for the visual designer (e.g. '{\"position\":{\"x\":0,\"y\":0}}'). Defaults to '{}'."},
+                },
+                "required": ["workflow_id", "name", "description", "category", "color"],
+            },
+        ),
+        Tool(
+            name="remove_workflow_state",
+            description="Remove a state from a workflow (by state_id or name). Transitions touching it are removed too.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "integer"},
+                    "state_id": {"type": "string", "description": "State GUID (or use 'name')."},
+                    "name": {"type": "string", "description": "State name to match (or use 'state_id')."},
+                },
+                "required": ["workflow_id"],
+            },
+        ),
+        Tool(
+            name="add_workflow_transition",
+            description="Add a single transition (edge) between two states in a workflow.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "from_state_id": {"type": "string", "description": "Source state GUID."},
+                    "to_state_id": {"type": "string", "description": "Target state GUID."},
+                },
+                "required": ["workflow_id", "name", "description", "from_state_id", "to_state_id"],
+            },
+        ),
+        Tool(
+            name="remove_workflow_transition",
+            description="Remove a transition from a workflow (by transition_id or name).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "integer"},
+                    "transition_id": {"type": "string", "description": "Transition GUID (or use 'name')."},
+                    "name": {"type": "string", "description": "Transition name to match (or use 'transition_id')."},
+                },
+                "required": ["workflow_id"],
+            },
+        ),
+        # Template link tools (relationship type configuration)
+        Tool(
+            name="list_template_links",
+            description="List all template link types (relationship types) in the org, with their inward/outward names.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        Tool(
+            name="create_template_link",
+            description="Create a template link type (a relationship type). Example: name='Blocks', outward_name='blocks', inward_name='is blocked by'.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Link type name (unique in org)."},
+                    "outward_name": {"type": "string", "description": "From the source ticket's perspective (e.g. 'blocks')."},
+                    "inward_name": {"type": "string", "description": "From the target ticket's perspective (e.g. 'is blocked by')."},
+                },
+                "required": ["name", "outward_name", "inward_name"],
+            },
+        ),
+        Tool(
+            name="update_template_link",
+            description="Update a template link type by id.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "link_id": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "outward_name": {"type": "string"},
+                    "inward_name": {"type": "string"},
+                },
+                "required": ["link_id", "name", "outward_name", "inward_name"],
+            },
+        ),
+        Tool(
+            name="delete_template_link",
+            description="Delete a template link type by id.",
+            inputSchema={
+                "type": "object",
+                "properties": {"link_id": {"type": "integer"}},
+                "required": ["link_id"],
+            },
+        ),
+        # Shared field tools
+        Tool(
+            name="list_shared_fields",
+            description="List all shared (org-level, reusable) fields.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        Tool(
+            name="create_shared_field",
+            description="Create a shared (org-level) field that can be attached to multiple templates. Call load_skill(name=\"pomavo-shared-fields\") for field types and options.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "field_type": {"type": "string", "enum": ["text", "number", "textarea", "date", "time", "datetime", "checkbox", "dropdown", "multiselect", "user"]},
+                    "field_options": {"type": "object", "description": "Optional. { selectOptions?: [{value,label,icon?,color?}], allowMultipleUsers?, topicId?, defaultValue? }"},
+                },
+                "required": ["label", "field_type"],
+            },
+        ),
+        Tool(
+            name="update_shared_field",
+            description="Update a shared field by its GUID id.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "field_id": {"type": "string", "description": "Shared field GUID."},
+                    "label": {"type": "string"},
+                    "field_type": {"type": "string", "enum": ["text", "number", "textarea", "date", "time", "datetime", "checkbox", "dropdown", "multiselect", "user"]},
+                    "field_options": {"type": "object", "description": "Optional FieldOptions body."},
+                },
+                "required": ["field_id", "label", "field_type"],
+            },
+        ),
+        Tool(
+            name="delete_shared_field",
+            description="Delete a shared field. By default fails if used by any template; pass force=true to detach it from all templates first.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "field_id": {"type": "string", "description": "Shared field GUID."},
+                    "force": {"type": "boolean", "description": "Remove from all templates before deleting (default false)."},
+                },
+                "required": ["field_id"],
+            },
+        ),
+        Tool(
+            name="add_shared_field_to_template",
+            description="Attach an existing shared field to a template.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "template_id": {"type": "integer"},
+                    "shared_field_id": {"type": "string", "description": "Shared field GUID."},
+                },
+                "required": ["template_id", "shared_field_id"],
+            },
+        ),
+        Tool(
+            name="remove_shared_field_from_template",
+            description="Detach a shared field from a template.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "template_id": {"type": "integer"},
+                    "shared_field_id": {"type": "string", "description": "Shared field GUID."},
+                },
+                "required": ["template_id", "shared_field_id"],
+            },
+        ),
         # Automation authoring tools (incremental, alias-addressed)
+        Tool(
+            name="delete_automation",
+            description="Delete an entire automation rule by its numeric id. (Use remove_node / disconnect_nodes for parts of a rule.)",
+            inputSchema={
+                "type": "object",
+                "properties": {"automation_id": {"type": "integer"}},
+                "required": ["automation_id"],
+            },
+        ),
         Tool(
             name="search_node_types",
             description=(
@@ -1186,7 +1684,9 @@ Before writing layout_code, call load_skill(name="pomavo-report-layout").""",
             name="search_tickets",
             description="""Search for tickets using the Pomavo query DSL (filters, @mentions, date literals, in/not in, ORDER BY). Returns a paginated list of matching tickets.
 
-Before writing a query, call load_skill(name="pomavo-query-language") for the full DSL syntax, fields, operators, and examples.""",
+This tool ALSO runs aggregation/projection queries: when the query includes a `group by` and/or `return` clause it returns computed columns and rows (a table) instead of tickets — e.g. `group by status return status as x, count() as y`, or `return Title, Priority`. Aggregations support count(), sum/avg/min/max(field), count_distinct(field), and column aliasing with `as`.
+
+Before writing a query, call load_skill(name="pomavo-query-language") for the full DSL syntax, fields, operators, aggregations, and examples.""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1920,6 +2420,42 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 lines.append("Variables: " + ", ".join(v.get("name", "") for v in variables))
             return [TextContent(type="text", text="\n".join(lines))]
 
+        elif name == "list_reports":
+            project_id = arguments.get("project_id")
+            if not project_id:
+                return [TextContent(type="text", text="Error: 'project_id' is required")]
+            reports = await client.list_reports(project_id)
+            if isinstance(reports, dict):
+                reports = reports.get("success") or reports.get("reports") or []
+            if not reports:
+                return [TextContent(type="text", text=f"No reports found for project {project_id}.")]
+            lines = [f"# Reports for project {project_id} ({len(reports)})"]
+            for r in reports:
+                variables = r.get("variables") or []
+                suffix = f" — variables: {', '.join(v.get('name', '') for v in variables)}" if variables else ""
+                lines.append(f"- [{r.get('id')}] {r.get('name', '(unnamed)')}{suffix}")
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "get_report":
+            report_id = arguments.get("report_id")
+            if not report_id:
+                return [TextContent(type="text", text="Error: 'report_id' is required")]
+            report = await client.get_report(report_id)
+            lines = [
+                f"# Report: {report.get('name', '(unnamed)')}",
+                f"ID: {report.get('id', report_id)}",
+                f"Project ID: {report.get('projectId')}",
+            ]
+            variables = report.get("variables") or []
+            if variables:
+                lines.append("Variables: " + ", ".join(v.get("name", "") for v in variables))
+            lines.append("")
+            lines.append("## Layout code")
+            lines.append("```")
+            lines.append(report.get("layoutCode") or "")
+            lines.append("```")
+            return [TextContent(type="text", text="\n".join(lines))]
+
         elif name == "update_report":
             report_id = arguments.get("report_id")
             if not report_id:
@@ -2095,6 +2631,330 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 lines.append(f"- {(alias + ': ') if alias else ''}{er.get('message')}")
             return [TextContent(type="text", text="\n".join(lines))]
 
+        elif name == "delete_automation":
+            automation_id = arguments.get("automation_id")
+            if not automation_id:
+                return [TextContent(type="text", text="Error: 'automation_id' is required")]
+            await client.delete_automation(automation_id)
+            return [TextContent(type="text", text=f"Deleted automation {automation_id}.")]
+
+        elif name == "create_template":
+            required = ["name", "description", "icon", "color", "fields", "screens"]
+            missing = [k for k in required if not arguments.get(k)]
+            if missing:
+                return [TextContent(type="text", text=f"Error: missing required: {', '.join(missing)}")]
+            workflow_id = arguments.get("workflow_id")
+            workflow = arguments.get("workflow")
+            if not workflow_id and not workflow:
+                return [TextContent(type="text", text="Error: provide either 'workflow_id' or 'workflow'")]
+            body: dict[str, Any] = {
+                "name": arguments["name"].strip(),
+                "description": arguments["description"],
+                "icon": arguments["icon"],
+                "color": arguments["color"],
+                "fields": arguments["fields"],
+                "screens": arguments["screens"],
+            }
+            if workflow_id:
+                body["workflowId"] = workflow_id
+            if workflow:
+                body["workflow"] = workflow
+            if arguments.get("sequence_config"):
+                body["sequenceConfig"] = arguments["sequence_config"]
+            template = await client.create_template(body)
+            lines = [
+                f"# Created template: {template.get('name', body['name'])}",
+                f"ID: {template.get('id')}",
+                f"Workflow ID: {template.get('workflowId')}",
+                f"Fields: {len(template.get('fields') or [])}, Screens: {len(template.get('screens') or [])}",
+            ]
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "update_template":
+            template_id = arguments.get("template_id")
+            new_name = (arguments.get("name") or "").strip()
+            if not template_id or not new_name:
+                return [TextContent(type="text", text="Error: 'template_id' and 'name' are required")]
+            template = await client.update_template_general(
+                template_id=template_id,
+                name=new_name,
+                description=arguments.get("description"),
+                icon=arguments.get("icon"),
+                color=arguments.get("color"),
+            )
+            return [TextContent(type="text", text=f"Updated template {template.get('id', template_id)}: {template.get('name', new_name)}")]
+
+        elif name == "update_template_workflow":
+            template_id = arguments.get("template_id")
+            workflow_id = arguments.get("workflow_id")
+            if not template_id or not workflow_id:
+                return [TextContent(type="text", text="Error: 'template_id' and 'workflow_id' are required")]
+            template = await client.update_template_workflow(template_id, workflow_id)
+            return [TextContent(type="text", text=f"Template {template.get('id', template_id)} now uses workflow {workflow_id}.")]
+
+        elif name == "delete_template":
+            template_id = arguments.get("template_id")
+            if not template_id:
+                return [TextContent(type="text", text="Error: 'template_id' is required")]
+            await client.delete_template(template_id)
+            return [TextContent(type="text", text=f"Deleted template {template_id}.")]
+
+        elif name == "create_screen":
+            template_id = arguments.get("template_id")
+            screen_name = (arguments.get("name") or "").strip()
+            description = arguments.get("description")
+            if not template_id or not screen_name or description is None:
+                return [TextContent(type="text", text="Error: 'template_id', 'name' and 'description' are required")]
+            template = await client.create_screen(
+                template_id=template_id,
+                name=screen_name,
+                description=description,
+                layout_code=arguments.get("layout_code") or "",
+                sort_order=arguments.get("sort_order"),
+            )
+            return [TextContent(type="text", text=f"Added screen '{screen_name}' to template {template.get('id', template_id)}. Screens: {len(template.get('screens') or [])}.")]
+
+        elif name == "update_screen":
+            template_id = arguments.get("template_id")
+            if not template_id:
+                return [TextContent(type="text", text="Error: 'template_id' is required")]
+            if arguments.get("screen_id") is None and not arguments.get("name"):
+                return [TextContent(type="text", text="Error: provide 'screen_id' or 'name' to identify the screen")]
+            template = await client.update_screen(
+                template_id=template_id,
+                screen_id=arguments.get("screen_id"),
+                name=arguments.get("name"),
+                description=arguments.get("description"),
+                layout_code=arguments.get("layout_code"),
+                sort_order=arguments.get("sort_order"),
+            )
+            return [TextContent(type="text", text=f"Updated screen on template {template.get('id', template_id)}.")]
+
+        elif name == "delete_screen":
+            template_id = arguments.get("template_id")
+            if not template_id:
+                return [TextContent(type="text", text="Error: 'template_id' is required")]
+            if arguments.get("screen_id") is None and not arguments.get("name"):
+                return [TextContent(type="text", text="Error: provide 'screen_id' or 'name' to identify the screen")]
+            template = await client.delete_screen(
+                template_id=template_id,
+                screen_id=arguments.get("screen_id"),
+                name=arguments.get("name"),
+            )
+            return [TextContent(type="text", text=f"Deleted screen from template {template.get('id', template_id)}. Screens: {len(template.get('screens') or [])}.")]
+
+        elif name == "list_workflows":
+            workflows = await client.list_workflows()
+            if not workflows:
+                return [TextContent(type="text", text="No workflows found.")]
+            lines = [f"# Workflows ({len(workflows)})"]
+            for w in workflows:
+                states = w.get("states") or []
+                transitions = w.get("transitions") or []
+                lines.append(
+                    f"- [{w.get('id')}] {w.get('name', '(unnamed)')} — "
+                    f"{len(states)} states, {len(transitions)} transitions, "
+                    f"used by {w.get('templateCount', 0)} template(s)"
+                )
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "get_workflow":
+            workflow_id = arguments.get("workflow_id")
+            if not workflow_id:
+                return [TextContent(type="text", text="Error: 'workflow_id' is required")]
+            w = await client.get_workflow(workflow_id)
+            lines = [
+                f"# Workflow: {w.get('name', '(unnamed)')}",
+                f"ID: {w.get('id', workflow_id)}",
+                f"Description: {w.get('description') or 'N/A'}",
+                "",
+                "## States",
+            ]
+            for s in w.get("states") or []:
+                lines.append(f"- [{s.get('id')}] {s.get('name')} ({s.get('category')}, {s.get('color')})")
+            lines.append("")
+            lines.append("## Transitions")
+            for t in w.get("transitions") or []:
+                lines.append(f"- [{t.get('id')}] {t.get('name')}: {t.get('fromStateId')} -> {t.get('toStateId')}")
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "create_workflow":
+            wf_name = (arguments.get("name") or "").strip()
+            description = arguments.get("description")
+            states = arguments.get("states")
+            transitions = arguments.get("transitions")
+            if not wf_name or description is None or states is None or transitions is None:
+                return [TextContent(type="text", text="Error: 'name', 'description', 'states' and 'transitions' are required")]
+            w = await client.create_workflow(wf_name, description, states, transitions)
+            return [TextContent(type="text", text=f"# Created workflow: {w.get('name', wf_name)}\nID: {w.get('id')}\nStates: {len(w.get('states') or [])}, Transitions: {len(w.get('transitions') or [])}")]
+
+        elif name == "update_workflow":
+            workflow_id = arguments.get("workflow_id")
+            wf_name = (arguments.get("name") or "").strip()
+            description = arguments.get("description")
+            states = arguments.get("states")
+            transitions = arguments.get("transitions")
+            if not workflow_id or not wf_name or description is None or states is None or transitions is None:
+                return [TextContent(type="text", text="Error: 'workflow_id', 'name', 'description', 'states' and 'transitions' are required")]
+            w = await client.update_workflow(workflow_id, wf_name, description, states, transitions)
+            return [TextContent(type="text", text=f"Updated workflow {w.get('id', workflow_id)}: {len(w.get('states') or [])} states, {len(w.get('transitions') or [])} transitions.")]
+
+        elif name == "delete_workflow":
+            workflow_id = arguments.get("workflow_id")
+            if not workflow_id:
+                return [TextContent(type="text", text="Error: 'workflow_id' is required")]
+            await client.delete_workflow(workflow_id)
+            return [TextContent(type="text", text=f"Deleted workflow {workflow_id}.")]
+
+        elif name == "add_workflow_state":
+            workflow_id = arguments.get("workflow_id")
+            state_name = (arguments.get("name") or "").strip()
+            description = arguments.get("description")
+            category = arguments.get("category")
+            color = arguments.get("color")
+            if not workflow_id or not state_name or description is None or not category or not color:
+                return [TextContent(type="text", text="Error: 'workflow_id', 'name', 'description', 'category' and 'color' are required")]
+            w = await client.add_workflow_state(
+                workflow_id=workflow_id,
+                name=state_name,
+                description=description,
+                category=category,
+                color=color,
+                icon=arguments.get("icon"),
+                graph_data=arguments.get("graph_data") or "{}",
+                state_id=arguments.get("state_id"),
+            )
+            return [TextContent(type="text", text=f"Added state '{state_name}' to workflow {w.get('id', workflow_id)}. States: {len(w.get('states') or [])}.")]
+
+        elif name == "remove_workflow_state":
+            workflow_id = arguments.get("workflow_id")
+            if not workflow_id:
+                return [TextContent(type="text", text="Error: 'workflow_id' is required")]
+            if not arguments.get("state_id") and not arguments.get("name"):
+                return [TextContent(type="text", text="Error: provide 'state_id' or 'name'")]
+            w = await client.remove_workflow_state(
+                workflow_id=workflow_id,
+                state_id=arguments.get("state_id"),
+                state_name=arguments.get("name"),
+            )
+            return [TextContent(type="text", text=f"Removed state from workflow {w.get('id', workflow_id)}. States: {len(w.get('states') or [])}.")]
+
+        elif name == "add_workflow_transition":
+            workflow_id = arguments.get("workflow_id")
+            tr_name = (arguments.get("name") or "").strip()
+            description = arguments.get("description")
+            from_state_id = arguments.get("from_state_id")
+            to_state_id = arguments.get("to_state_id")
+            if not workflow_id or not tr_name or description is None or not from_state_id or not to_state_id:
+                return [TextContent(type="text", text="Error: 'workflow_id', 'name', 'description', 'from_state_id' and 'to_state_id' are required")]
+            w = await client.add_workflow_transition(
+                workflow_id=workflow_id,
+                name=tr_name,
+                description=description,
+                from_state_id=from_state_id,
+                to_state_id=to_state_id,
+            )
+            return [TextContent(type="text", text=f"Added transition '{tr_name}' to workflow {w.get('id', workflow_id)}. Transitions: {len(w.get('transitions') or [])}.")]
+
+        elif name == "remove_workflow_transition":
+            workflow_id = arguments.get("workflow_id")
+            if not workflow_id:
+                return [TextContent(type="text", text="Error: 'workflow_id' is required")]
+            if not arguments.get("transition_id") and not arguments.get("name"):
+                return [TextContent(type="text", text="Error: provide 'transition_id' or 'name'")]
+            w = await client.remove_workflow_transition(
+                workflow_id=workflow_id,
+                transition_id=arguments.get("transition_id"),
+                transition_name=arguments.get("name"),
+            )
+            return [TextContent(type="text", text=f"Removed transition from workflow {w.get('id', workflow_id)}. Transitions: {len(w.get('transitions') or [])}.")]
+
+        elif name == "list_template_links":
+            links = await client.list_template_links()
+            if not links:
+                return [TextContent(type="text", text="No template links found.")]
+            lines = [f"# Template links ({len(links)})"]
+            for lk in links:
+                lines.append(
+                    f"- [{lk.get('id')}] {lk.get('name')}: outward='{lk.get('outwardName')}', inward='{lk.get('inwardName')}'"
+                )
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "create_template_link":
+            link_name = (arguments.get("name") or "").strip()
+            outward = arguments.get("outward_name")
+            inward = arguments.get("inward_name")
+            if not link_name or not outward or not inward:
+                return [TextContent(type="text", text="Error: 'name', 'outward_name' and 'inward_name' are required")]
+            lk = await client.create_template_link(link_name, inward, outward)
+            return [TextContent(type="text", text=f"Created template link [{lk.get('id')}] {lk.get('name')}.")]
+
+        elif name == "update_template_link":
+            link_id = arguments.get("link_id")
+            link_name = (arguments.get("name") or "").strip()
+            outward = arguments.get("outward_name")
+            inward = arguments.get("inward_name")
+            if not link_id or not link_name or not outward or not inward:
+                return [TextContent(type="text", text="Error: 'link_id', 'name', 'outward_name' and 'inward_name' are required")]
+            lk = await client.update_template_link(link_id, link_name, inward, outward)
+            return [TextContent(type="text", text=f"Updated template link [{lk.get('id', link_id)}] {lk.get('name', link_name)}.")]
+
+        elif name == "delete_template_link":
+            link_id = arguments.get("link_id")
+            if not link_id:
+                return [TextContent(type="text", text="Error: 'link_id' is required")]
+            await client.delete_template_link(link_id)
+            return [TextContent(type="text", text=f"Deleted template link {link_id}.")]
+
+        elif name == "list_shared_fields":
+            fields = await client.list_shared_fields()
+            if not fields:
+                return [TextContent(type="text", text="No shared fields found.")]
+            lines = [f"# Shared fields ({len(fields)})"]
+            for f in fields:
+                lines.append(f"- [{f.get('id')}] {f.get('label')} ({f.get('fieldType')})")
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "create_shared_field":
+            label = (arguments.get("label") or "").strip()
+            field_type = (arguments.get("field_type") or "").strip()
+            if not label or not field_type:
+                return [TextContent(type="text", text="Error: 'label' and 'field_type' are required")]
+            f = await client.create_shared_field(label, field_type, arguments.get("field_options"))
+            return [TextContent(type="text", text=f"Created shared field [{f.get('id')}] {f.get('label', label)} ({f.get('fieldType', field_type)}).")]
+
+        elif name == "update_shared_field":
+            field_id = (arguments.get("field_id") or "").strip()
+            label = (arguments.get("label") or "").strip()
+            field_type = (arguments.get("field_type") or "").strip()
+            if not field_id or not label or not field_type:
+                return [TextContent(type="text", text="Error: 'field_id', 'label' and 'field_type' are required")]
+            f = await client.update_shared_field(field_id, label, field_type, arguments.get("field_options"))
+            return [TextContent(type="text", text=f"Updated shared field [{f.get('id', field_id)}] {f.get('label', label)}.")]
+
+        elif name == "delete_shared_field":
+            field_id = (arguments.get("field_id") or "").strip()
+            if not field_id:
+                return [TextContent(type="text", text="Error: 'field_id' is required")]
+            await client.delete_shared_field(field_id, force=bool(arguments.get("force", False)))
+            return [TextContent(type="text", text=f"Deleted shared field {field_id}.")]
+
+        elif name == "add_shared_field_to_template":
+            template_id = arguments.get("template_id")
+            shared_field_id = (arguments.get("shared_field_id") or "").strip()
+            if not template_id or not shared_field_id:
+                return [TextContent(type="text", text="Error: 'template_id' and 'shared_field_id' are required")]
+            await client.add_shared_field_to_template(template_id, shared_field_id)
+            return [TextContent(type="text", text=f"Attached shared field {shared_field_id} to template {template_id}.")]
+
+        elif name == "remove_shared_field_from_template":
+            template_id = arguments.get("template_id")
+            shared_field_id = (arguments.get("shared_field_id") or "").strip()
+            if not template_id or not shared_field_id:
+                return [TextContent(type="text", text="Error: 'template_id' and 'shared_field_id' are required")]
+            await client.remove_shared_field_from_template(template_id, shared_field_id)
+            return [TextContent(type="text", text=f"Detached shared field {shared_field_id} from template {template_id}.")]
+
         elif name == "list_iterations":
             project_id = arguments.get("project_id")
             if not project_id and "project_slug" in arguments:
@@ -2236,6 +3096,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             page_size = min(arguments.get("page_size", 20), 100)
 
             result = await client.search_tickets(query, page, page_size)
+
+            # A `group by` / `return` projection query yields computed columns
+            # instead of tickets — render it as a table rather than a ticket list.
+            if isinstance(result, AggregationResult):
+                return [TextContent(type="text", text=format_aggregation_result(result))]
 
             lines = [
                 f"# Search Results",

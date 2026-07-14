@@ -20,9 +20,9 @@ JSX-like tags describing a 12-column grid.
   12 columns via `width={n}`.
 - **Report components** (LEAF tags, self-closing), each takes a required `query` attribute:
   `<RadialChart>`, `<BarChart>`, `<LineChart>`, `<AreaChart>`, `<PieChart>`,
-  `<ScatterChart>`, `<RadarChart>`, `<HeatmapChart>`, `<Table>`. Most charts use the same
-  `x`/`y`/`series`/`color` column contract (below); `<HeatmapChart>` uses `x`/`y`/`value`
-  instead.
+  `<ScatterChart>`, `<RadarChart>`, `<HeatmapChart>`, `<StatChart>`, `<Table>`. Most charts use
+  the same `x`/`y`/`series`/`color` column contract (below); `<HeatmapChart>` uses `x`/`y`/`value`
+  instead, and `<StatChart>` reads a single scalar (see below).
 - **Component attributes:** `query="..."` (required), `width={1-12}`, `height={rows}`,
   `heightAutoExpand`, `title="..."`.
   - Cartesian charts (BarChart/LineChart/AreaChart/ScatterChart) also accept
@@ -98,6 +98,16 @@ text beside a chart:
   ```
 - Vary the visual rhythm: alternate full-width charts, side-by-side rows, and text/chart
   splits so the page doesn't look like one long stack.
+
+## Tables
+
+- **Don't constrain the width of a `<Table>` (or its parent) when it has many columns.** A wide
+  table needs room to lay out its columns; a small `width={n}` (or a narrow `<Column>`/`<Row>`
+  parent) clips the columns. Give wide tables the full width (`width={12}`, and don't nest them
+  in a narrow container) so nothing is cut off.
+- **Prefer tables with few columns.** A table with a handful of columns is far easier to read
+  than a very wide one. Return only the columns that matter (project a focused set in the
+  query), and split unrelated data into separate small tables rather than one sprawling table.
 
 ## Use headers and markdown (avoid monotony)
 
@@ -184,9 +194,18 @@ produce chart data.
   `... group by assignee, status return assignee as x, status as y, count() as value`. By
   default cells are shaded by a value-scaled gradient; pass a component `threshold` attribute
   to color cells in discrete bands: a comma-separated list of `minValue:color` pairs where a
-  cell takes the color of the highest threshold at or below its value (use hex/named colors,
-  not comma-bearing `rgb()/hsl()`), e.g.
-  `<HeatmapChart query="..." threshold="0:#22c55e,5:#eab308,10:#ef4444" width={8} />`.
+  cell takes the color of the highest threshold at or below its value. Colors may be hex/named
+  or theme tokens (`chart-1`, `primary`, `destructive`); not comma-bearing `rgb()/hsl()`, e.g.
+  `<HeatmapChart query="..." threshold="0:chart-2,5:chart-4,10:destructive" width={8} />`.
+  Alternatively pass a `gradient` attribute — a comma-separated list of colors/theme tokens for
+  a continuous scale (one color = alpha ramp, two or more = interpolated across the value range),
+  e.g. `<HeatmapChart query="..." gradient="chart-1,chart-3,destructive" width={8} />`.
+- **Stat** (StatChart): a single-value KPI card. The query should return ONE row; the displayed
+  value comes from a `value`, `y`, `count`, or `total` column (in that order) or else the first
+  column, e.g. `status_category != 'terminal' return count() as value`. Numeric values are
+  locale-formatted; a `yformat` date keyword renders epoch-millisecond values as dates. An optional
+  `label` attribute adds a caption under the value, e.g.
+  `<StatChart title="Open tickets" label="in progress" query="..." width={3} />`.
 - **Custom colors:** any chart may return an optional `color` column (any CSS color: hex,
   `rgb()`/`rgba()`/`hsl()`, or a named color) to override the palette per
   category/point/series. To color each status bucket by its own workflow-state color, group by

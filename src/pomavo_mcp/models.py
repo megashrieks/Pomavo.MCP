@@ -203,6 +203,19 @@ class SearchResult(BaseModel):
         populate_by_name = True
 
 
+class AggregationResult(BaseModel):
+    """Result of a RETURN / GROUP BY projection query: an ordered set of named
+    columns and the projected rows (one per group bucket, or one per matching
+    ticket for a flat RETURN). Returned by /api/search instead of SearchResult
+    when the query contains a `group by` and/or `return` clause."""
+    columns: list[str] = []
+    rows: list[dict[str, Any]] = []
+    candidate_count: int = Field(alias="candidateCount", default=0)
+
+    class Config:
+        populate_by_name = True
+
+
 class AvailableTransition(BaseModel):
     """An available transition for a ticket."""
     transition_id: str = Field(alias="transitionId")
