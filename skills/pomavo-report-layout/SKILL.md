@@ -37,6 +37,9 @@ JSX-like tags describing a 12-column grid.
   to render its content as rich markdown (headings, lists, tables, code, links), e.g.
   `<Text renderer="markdown"># Overview\nSee the charts below.</Text>`. Newlines and
   `${...}` inside `<Text>` are preserved verbatim (not interpolated).
+- **`<GeoMap>`** renders data on a styled OSM map (see the GeoMap section below). Unlike the
+  other components it is a CONTAINER holding a `<Region>` plus one or more geographic data
+  layers, not a single self-closing chart.
 - **NOTE:** `<Field>` and `<Label>` tags are NOT valid in reports and render a runtime error.
 
 ## Layout composition (don't just stack top-down)
@@ -219,6 +222,80 @@ produce chart data.
   `'...'` for both string values and field names with spaces — single quotes work
   everywhere in the DSL. Example:
   `query="status_category != 'terminal' and 'End Date' != '' group by 'End Date', Priority return 'End Date' as x, Priority as series, count() as y"`
+
+## GeoMap (geographic charts)
+
+`<GeoMap>` plots ticket data on a styled OpenStreetMap-derived basemap (MapLibre GL). Unlike
+the other charts it is a **container**: it holds one `<Region>` (the map extent) plus one or
+more geographic **data layers**. All children are self-closing leaves — the composition is
+expressed through tags + attributes, not nesting.
+
+> **Coverage:** basemap and administrative join layers exist ONLY for **India** and the
+> **United States**. Points/markers outside those two countries render on a blank basemap.
+> Choropleth (polygon fill) is supported for `state`/`district`/`zip` (US) and
+> `state`/`district`/`pin` (India). India PIN and any raw coordinates are point-only.
+
+```
+<GeoMap title="Tickets by state" width={12} height={8}>
+  <Region by="country" country="india" />
+  <Choropleth level="state" key="region" query="group by state return state as region, count() as value" gradient="chart-1,chart-3,destructive" />
+</GeoMap>
+```
+
+### Container: `<GeoMap>`
+Attributes: `title="..."`, `width={1-12}`, `height={rows}` (each row ≈ 60px; defaults to a
+tall map). It fills its grid cell like any other chart.
+
+### Extent: `<Region>` (required, frame only — draws nothing)
+Controls what area the map frames to. Attributes:
+- `by="lca"` — fit tightly to the plotted data (lowest common area; renders nothing extra).
+  This is the default-style choice for coordinate layers.
+- `by="country|state|district|zip|pin"` + `country="india|us"` — frame to that country's extent.
+- `bbox="minLng,minLat,maxLng,maxLat"` — explicit extent (overrides auto-fit).
+
+If no `<Region>` is given, the map auto-fits to the data (coordinate layers) or to the union of
+the countries inferred from the choropleth join keys.
+
+### Data layers (self-closing, each takes a `query`)
+| Tag | Required query columns | Renders |
+|-----|------------------------|---------|
+| `<Points>` | `lat`, `lng` (+ optional `value`, `label`, `color`) | fixed-radius circles |
+| `<Bubbles>` | `lat`, `lng`, `value` | circles scaled by `value` |
+| `<Heat>` | `lat`, `lng` (+ optional `value` weight) | heatmap density |
+| `<Categories>` | `lat`, `lng`, `series` (+ optional `color`) | circles colored per distinct `series` |
+| `<Choropleth>` | `region` (join key) + `value` | admin polygon fill (color-scaled by `value`) |
+
+Layer attributes:
+- **Coordinate layers** (`Points`/`Bubbles`/`Heat`/`Categories`): `lat="..."` / `lng="..."`
+  name the coordinate columns (default `lat` / `lng`); `radius={px}` sets the base marker size;
+  `cluster` groups nearby points.
+- **`<Choropleth>`**: `level="country|state|district|zip|pin"` picks the admin polygon set;
+  `key="..."` names the query column holding the join key (default `region`); `country="..."`
+  scopes framing. Color is scaled across the `value` range — use `gradient="..."` (comma-separated
+  colors/theme tokens, interpolated) or `threshold="min:color,..."` (discrete bands), exactly like
+  `<HeatmapChart>`.
+
+Level aliases: `district` = `county`, `pin` = `pincode`. Use `state`/`district` for both
+countries; `zip` for the US, `pin` for India.
+
+### Column convention (geographic)
+GeoMap queries follow a geo-specific column contract (NOT `x`/`y`):
+- `region` — the admin join key for `<Choropleth>` (or a custom column named via `key`). Values
+  must match the polygon keys: country ⇒ ISO-2 / name; state ⇒ ISO-3166-2 (`US-CA`, `IN-KA`) or
+  name; district ⇒ id / GADM id / county FIPS; zip ⇒ ZCTA code; pin ⇒ PIN code.
+- `value` — the measure (consistent with `<HeatmapChart>`), used for choropleth shading and
+  bubble/heat magnitude.
+- `lat` / `lng` — coordinates for point-based layers.
+- `label` — optional tooltip text; `series` — the category for `<Categories>`; `color` —
+  optional per-row CSS color override.
+
+```
+<GeoMap title="Field incidents" width={12} height={8}>
+  <Region by="lca" />
+  <Heat query="Latitude != '' group by Latitude, Longitude return Latitude as lat, Longitude as lng, count() as value" />
+  <Points query="Priority='critical' and Latitude != '' return Latitude as lat, Longitude as lng, Title as label" radius={6} />
+</GeoMap>
+```
 
 ## Variables
 
